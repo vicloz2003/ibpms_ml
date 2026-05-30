@@ -1,0 +1,19 @@
+# Virtual environment (heavy, machine-specific)
+.venv/
+venv/
+env/
+
+# Python caches / build
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Model caches (downloaded transformers / torch hub)
+.cache/
+models_cache/
+
+# Local run logs and secrets
+*.log
+.env
