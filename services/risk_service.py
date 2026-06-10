@@ -21,8 +21,9 @@ import torch
 from torch import nn
 
 from models.schemas import (
-    RiskFeatures, RiskScoreRequest, RiskScoreResponse, RiskAssessment,
+    RiskFeatures, RiskScoreRequest, RiskScoreResponse, RiskAssessment, ModelMetrics,
 )
+from services import dataset_service as ds
 
 # Feature order is fixed — must match RiskFeatures and the gateway's vector builder.
 FEATURE_NAMES = [
@@ -73,31 +74,16 @@ class _RiskModel:
         self.std = np.ones(N_FEATURES, dtype=np.float32)
         self.threshold = 1.0  # reconstruction-error cutoff (set during training)
         self.err_scale = 1.0  # normalizes error → [0,1] risk score
+        self.metrics: dict = {}
+        self.n_train = 0
+        self.n_test = 0
 
-    # ── training ────────────────────────────────────────────────────────────
-    def _synthetic_healthy(self, n: int) -> np.ndarray:
-        """
-        Generate healthy-process feature vectors. A healthy instance:
-          - elapsedRatio ~ 1 (on schedule), progressRatio ~ 1 (advancing),
-          - avgTaskRatio ~ 1, low queue/reassignment/bottleneck/rework.
-        Gaussian noise (clipped ≥0) gives a realistic "normal" manifold.
-        """
-        rng = np.random.default_rng(SEED)
-        cols = [
-            rng.normal(1.0, 0.20, n),   # elapsedRatio
-            rng.normal(0.9, 0.15, n),   # progressRatio
-            rng.normal(1.0, 0.20, n),   # avgTaskRatio
-            rng.normal(0.3, 0.15, n),   # maxQueueRatio
-            rng.normal(0.1, 0.08, n),   # reassignmentRatio
-            rng.normal(0.2, 0.12, n),   # bottleneckPressure
-            rng.normal(0.05, 0.05, n),  # reworkRatio
-        ]
-        data = np.clip(np.stack(cols, axis=1), 0.0, None).astype(np.float32)
-        return data
-
-    def train(self, n_samples: int = 4000, epochs: int = 250) -> None:
+    # ── training + validation ─────────────────────────────────────────────────
+    def train(self, n_samples: int = 1500, epochs: int = 250) -> None:
         torch.manual_seed(SEED)
-        raw = self._synthetic_healthy(n_samples)
+        # Healthy corpus from the shared dataset module (domain-grounded normal manifold).
+        raw = ds.generate_healthy_risk(n=n_samples)
+        self.n_train = len(raw)
         self.mean = raw.mean(axis=0)
         self.std = raw.std(axis=0) + 1e-6
         x = torch.from_numpy((raw - self.mean) / self.std).to(_DEVICE)
@@ -119,6 +105,21 @@ class _RiskModel:
         # 97.5th percentile of healthy errors → anything above is anomalous.
         self.threshold = float(np.percentile(errs, 97.5)) or 1e-3
         self.err_scale = self.threshold  # risk curve is scaled by the threshold
+
+        # Validate against held-out INJECTED anomalies → reportable detection metrics.
+        anom = ds.generate_anomalous_risk(n=300)
+        self.n_test = len(anom)
+        xa = torch.from_numpy(((anom - self.mean) / self.std).astype(np.float32)).to(_DEVICE)
+        with torch.no_grad():
+            anom_err = ((self.net(xa) - xa) ** 2).mean(dim=1).cpu().numpy()
+        detection_rate = float((anom_err > self.threshold).mean())   # true positives
+        false_positive = float((errs > self.threshold).mean())       # on healthy set
+        self.metrics = {
+            "detectionRate": round(detection_rate, 4),
+            "falsePositiveRate": round(false_positive, 4),
+            "threshold": round(self.threshold, 6),
+            "thresholdPercentile": 97.5,
+        }
 
     # ── inference ───────────────────────────────────────────────────────────
     def _vector(self, f: RiskFeatures) -> np.ndarray:
@@ -183,6 +184,20 @@ def _model() -> _RiskModel:
 def warm_up() -> None:
     """Train the autoencoder once at startup so the first request is fast."""
     _model()
+
+
+def metrics() -> ModelMetrics:
+    m = _model()
+    return ModelMetrics(
+        name="Risk Autoencoder",
+        task="unsupervised anomaly detection",
+        architecture="PyTorch autoencoder 7→5→3→5→7, MSE reconstruction error",
+        trainSamples=m.n_train,
+        testSamples=m.n_test,
+        metrics=m.metrics,
+        notes="Threshold = 97.5th percentile of healthy reconstruction error. "
+              "detectionRate measured on held-out injected anomalies.",
+    )
 
 
 def score(request: RiskScoreRequest) -> RiskScoreResponse:

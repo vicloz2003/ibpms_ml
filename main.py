@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 
 from routers.agent_router import router as agent_router
 from routers.risk_router import router as risk_router
+from routers.route_router import router as route_router
 
 load_dotenv()
 
@@ -38,6 +39,7 @@ app.add_middleware(
 
 app.include_router(agent_router)
 app.include_router(risk_router)
+app.include_router(route_router)
 
 
 @app.on_event("startup")
@@ -54,6 +56,11 @@ def _startup():
             risk_service.warm_up()
         except Exception as e:  # pragma: no cover
             print(f"[WARN] Risk autoencoder warm-up failed: {e}")
+        try:
+            from services import route_service
+            route_service.warm_up()
+        except Exception as e:  # pragma: no cover
+            print(f"[WARN] Route predictor warm-up failed: {e}")
 
 
 @app.get("/")

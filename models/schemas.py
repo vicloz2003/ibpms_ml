@@ -84,3 +84,79 @@ class RiskScoreResponse(BaseModel):
     assessments: List[RiskAssessment]
     threshold: float            # the learned anomaly threshold (for transparency)
     modelInfo: str
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Intelligent routing engine (RF-3.1): supervised "best route" prediction (DL).
+#
+# Unlike the risk autoencoder (unsupervised), route prediction is a *supervised*
+# classification problem: given the decision-time context of an instance, predict
+# which outgoing branch historically led to the best outcome (fast + successful).
+# The model is advisory — the deterministic SpEL engine still controls the flow.
+# ─────────────────────────────────────────────────────────────────────────────
+
+class RouteContext(BaseModel):
+    """
+    Context features available at a decision node, computed by the gateway from the
+    instance + its form data. Policy-agnostic ratios/encodings so one model generalizes.
+    """
+    processInstanceId: str = ""
+    nodeId: str = ""
+    # Monetary/size magnitude of the request, normalized to ~[0,1] by the gateway.
+    amount: float = Field(0.0, ge=0.0)
+    # Client segment: 0=residential, 0.5=commercial, 1=industrial.
+    clientSegment: float = Field(0.0, ge=0.0, le=1.0)
+    # Technical complexity of the request, [0,1].
+    complexity: float = Field(0.0, ge=0.0, le=1.0)
+    # How complete the submitted documents are, [0,1] (1 = all present & valid).
+    docCompleteness: float = Field(0.0, ge=0.0, le=1.0)
+    # 1 if the service location is rural (affects field-ops route), else 0.
+    zoneRural: float = Field(0.0, ge=0.0, le=1.0)
+    # Client's history of prior issues/claims, [0,1].
+    priorIssues: float = Field(0.0, ge=0.0, le=1.0)
+
+
+class RouteBranch(BaseModel):
+    """An outgoing branch the engine could take, as offered by the gateway."""
+    branchId: str               # the ControlFlow / target node id
+    label: str = ""             # human-readable name for the UI
+
+
+class RoutePredictRequest(BaseModel):
+    context: RouteContext
+    branches: List[RouteBranch] = Field(default_factory=list)
+
+
+class BranchScore(BaseModel):
+    branchId: str
+    label: str
+    probability: float          # model's predicted probability this is the best branch
+
+
+class RoutePredictResponse(BaseModel):
+    recommendedBranchId: Optional[str]
+    recommendedLabel: Optional[str]
+    confidence: float           # probability of the top branch, [0,1]
+    confident: bool             # confidence above the decision threshold
+    ranking: List[BranchScore]  # all branches ranked by probability
+    rationale: str              # short human explanation of the recommendation
+    modelInfo: str
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Model evaluation metrics — exposed so the rigor (train/test, accuracy, AUC…) is
+# transparent and demonstrable, not a black box.
+# ─────────────────────────────────────────────────────────────────────────────
+
+class ModelMetrics(BaseModel):
+    name: str
+    task: str                   # e.g. "supervised classification", "unsupervised anomaly"
+    architecture: str
+    trainSamples: int
+    testSamples: int
+    metrics: dict               # task-specific: accuracy, f1, auc, mae, detectionRate…
+    notes: str = ""
+
+
+class MetricsResponse(BaseModel):
+    models: List[ModelMetrics]
