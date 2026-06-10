@@ -134,35 +134,47 @@ N_RISK_FEATURES = len(RISK_FEATURES)
 
 
 def generate_healthy_risk(n: int = 1500, seed: int = SEED) -> np.ndarray:
-    """Healthy instances: on schedule, advancing, low queue/rework. The 'normal' manifold."""
+    """
+    Healthy IN-PROGRESS instances: spread across the whole progress range, with elapsed time
+    TRACKING progress (on schedule). The key normal pattern is elapsedRatio ≈ progressRatio:
+    being 40% done at 40% of the expected time is healthy, not anomalous. Low queue/rework.
+    """
     rng = np.random.default_rng(seed)
+    progress = np.clip(rng.uniform(0.10, 1.0, n), 0.0, 1.0)
+    # On-track or ahead of schedule: elapsed is 0.3–1.35× of progress, never far beyond it.
+    elapsed = np.clip(progress * rng.uniform(0.30, 1.35, n), 0.0, None)
+    # Distributions calibrated to what the gateway actually computes for healthy instances
+    # (queue waits and mid-graph current nodes are normal, not signs of trouble).
     cols = [
-        rng.normal(1.0, 0.20, n),   # elapsedRatio
-        rng.normal(0.9, 0.15, n),   # progressRatio
-        rng.normal(1.0, 0.20, n),   # avgTaskRatio
-        rng.normal(0.3, 0.15, n),   # maxQueueRatio
-        rng.normal(0.1, 0.08, n),   # reassignmentRatio
-        rng.normal(0.2, 0.12, n),   # bottleneckPressure
-        rng.normal(0.05, 0.05, n),  # reworkRatio
+        elapsed,                    # elapsedRatio — tracks progress
+        progress,                   # progressRatio
+        np.clip(rng.normal(1.0, 0.25, n), 0.0, None),   # avgTaskRatio
+        np.clip(rng.normal(0.55, 0.35, n), 0.0, None),  # maxQueueRatio
+        np.clip(rng.normal(0.20, 0.15, n), 0.0, None),  # reassignmentRatio
+        np.clip(rng.normal(0.50, 0.25, n), 0.0, None),  # bottleneckPressure
+        np.clip(rng.normal(0.05, 0.05, n), 0.0, None),  # reworkRatio
     ]
     return np.clip(np.stack(cols, axis=1), 0.0, None).astype(np.float32)
 
 
 def generate_anomalous_risk(n: int = 300, seed: int = SEED + 1) -> np.ndarray:
     """
-    Injected anomalies: stuck (high elapsed, low progress), neglected (high queue),
-    looping (high rework), churned (high reassignment). Used ONLY to validate that the
-    autoencoder's threshold actually catches them (reported as detectionRate).
+    Injected anomalies: the elapsed/progress relationship is BROKEN — lots of time spent for
+    little progress (stuck), plus neglected queues, churn and looping. Used ONLY to validate
+    that the autoencoder's threshold catches them (reported as detectionRate).
     """
     rng = np.random.default_rng(seed)
+    progress = np.clip(rng.uniform(0.05, 0.6, n), 0.0, 1.0)        # low/mid progress
+    # The defining signal: elapsed is FAR beyond what the progress justifies (stuck/overdue).
+    elapsed = np.clip(progress + rng.normal(1.8, 0.5, n), 0.0, None)
     cols = [
-        rng.normal(2.4, 0.5, n),    # elapsedRatio — way over time
-        rng.normal(0.3, 0.15, n),   # progressRatio — barely advancing
-        rng.normal(1.9, 0.5, n),    # avgTaskRatio — slow tasks
-        rng.normal(1.6, 0.5, n),    # maxQueueRatio — neglected in queue
-        rng.normal(0.6, 0.2, n),    # reassignmentRatio — churned
-        rng.normal(0.8, 0.2, n),    # bottleneckPressure — stuck at bottleneck
-        rng.normal(0.5, 0.2, n),    # reworkRatio — looping
+        elapsed,                    # elapsedRatio — decorrelated from progress (stuck)
+        progress,                   # progressRatio — barely advancing
+        np.clip(rng.normal(2.0, 0.5, n), 0.0, None),   # avgTaskRatio — slow tasks
+        np.clip(rng.normal(2.0, 0.5, n), 0.0, None),   # maxQueueRatio — severely neglected
+        np.clip(rng.normal(0.6, 0.2, n), 0.0, None),   # reassignmentRatio — churned
+        np.clip(rng.normal(0.85, 0.15, n), 0.0, None), # bottleneckPressure — stuck at bottleneck
+        np.clip(rng.normal(0.5, 0.2, n), 0.0, None),   # reworkRatio — looping
     ]
     return np.clip(np.stack(cols, axis=1), 0.0, None).astype(np.float32)
 
