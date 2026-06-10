@@ -61,6 +61,11 @@ def _startup():
             route_service.warm_up()
         except Exception as e:  # pragma: no cover
             print(f"[WARN] Route predictor warm-up failed: {e}")
+        try:
+            from services import delay_service
+            delay_service.warm_up()
+        except Exception as e:  # pragma: no cover
+            print(f"[WARN] Delay predictor warm-up failed: {e}")
 
 
 @app.get("/")

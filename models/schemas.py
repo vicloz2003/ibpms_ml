@@ -64,6 +64,8 @@ class RiskFeatures(BaseModel):
     bottleneckPressure: float = Field(0.0, ge=0.0)
     # repeated/looped nodes ratio (rework). >0 ⇒ loops.
     reworkRatio: float = Field(0.0, ge=0.0)
+    # business importance of the instance (amount/segment), [0,1]. Lifts priority (RF-3.4).
+    businessWeight: float = Field(0.0, ge=0.0, le=1.0)
 
 
 class RiskScoreRequest(BaseModel):
@@ -72,9 +74,11 @@ class RiskScoreRequest(BaseModel):
 
 class RiskAssessment(BaseModel):
     processInstanceId: str
-    riskScore: float            # [0,1] — higher = riskier
-    anomaly: bool               # reconstruction error above the learned threshold
+    riskScore: float            # [0,1] — anomaly-based risk (autoencoder)
+    delayProbability: float     # [0,1] — supervised P(SLA breach) (RF-3.2)
+    anomaly: bool               # reconstruction error above the learned threshold (RF-3.3)
     priority: str               # HIGH | MEDIUM | LOW (resource allocation, RF-3.4)
+    priorityScore: float        # [0,1] combined score behind the priority bucket
     reconstructionError: float
     drivers: List[str]          # top features explaining the risk (RF-3.3)
     recommendation: str         # suggested action / alternate route hint (RF-3.1)

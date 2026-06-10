@@ -9,7 +9,7 @@ from fastapi import APIRouter
 from models.schemas import (
     RoutePredictRequest, RoutePredictResponse, MetricsResponse,
 )
-from services import route_service, risk_service
+from services import route_service, risk_service, delay_service
 
 router = APIRouter(prefix="/route", tags=["route"])
 
@@ -28,5 +28,6 @@ def metrics():
     """
     return MetricsResponse(models=[
         route_service.metrics(),
+        delay_service.metrics(),
         risk_service.metrics(),
     ])

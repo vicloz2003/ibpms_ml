@@ -167,6 +167,53 @@ def generate_anomalous_risk(n: int = 300, seed: int = SEED + 1) -> np.ndarray:
     return np.clip(np.stack(cols, axis=1), 0.0, None).astype(np.float32)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Delay corpus: (runtime health vector) -> will it breach its SLA?  [supervised binary]
+#
+# Unlike the autoencoder (which asks "is this abnormal?"), this is a calibrated *forecast*:
+# given the current state of an in-flight instance, predict the probability it ends up late.
+# Labels come from a hidden logistic outcome model + Bernoulli draw, so the boundary is
+# probabilistic (noisy) — the classifier must learn a real gradient, not a clean cutoff.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Hidden outcome model the learner must recover. Breach probability depends on the
+# DEVIATION from the healthy baseline, not absolute values — so a normal instance stays
+# low-risk and only genuine stress (over-time, stalled, queued, looping) drives a breach.
+_DELAY_BASELINE = np.array([1.0, 0.9, 1.0, 0.3, 0.1, 0.2, 0.05], dtype=np.float32)
+_DELAY_W = np.array([2.2, -2.4, 1.0, 1.6, 0.9, 1.5, 1.6], dtype=np.float32)
+_DELAY_BIAS = -1.1   # centers the healthy breach rate low; overall ~30-35% positives
+
+
+def generate_delay_dataset(n: int = 1800, seed: int = SEED + 2) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Build a labeled delay corpus spanning healthy→stressed instances. Returns (X, y) with
+    y∈{0,1} = breached SLA. Feature vectors are a mixture so both classes are represented.
+    """
+    rng = np.random.default_rng(seed)
+    n_healthy = int(n * 0.6)
+    n_stressed = n - n_healthy
+    healthy = generate_healthy_risk(n=n_healthy, seed=seed + 10)
+    # Stressed: elevated elapsed/queue/rework, reduced progress — but milder than anomalies.
+    cols = [
+        rng.normal(1.6, 0.4, n_stressed),   # elapsedRatio
+        rng.normal(0.6, 0.2, n_stressed),   # progressRatio
+        rng.normal(1.4, 0.4, n_stressed),   # avgTaskRatio
+        rng.normal(0.9, 0.4, n_stressed),   # maxQueueRatio
+        rng.normal(0.3, 0.15, n_stressed),  # reassignmentRatio
+        rng.normal(0.5, 0.2, n_stressed),   # bottleneckPressure
+        rng.normal(0.25, 0.15, n_stressed), # reworkRatio
+    ]
+    stressed = np.clip(np.stack(cols, axis=1), 0.0, None).astype(np.float32)
+    X = np.concatenate([healthy, stressed], axis=0)
+
+    logits = (X - _DELAY_BASELINE) @ _DELAY_W + _DELAY_BIAS
+    probs = 1.0 / (1.0 + np.exp(-logits))
+    y = (rng.random(len(X)) < probs).astype(np.int64)   # Bernoulli outcome (noisy label)
+    # Shuffle so healthy/stressed aren't ordered.
+    idx = rng.permutation(len(X))
+    return X[idx], y[idx]
+
+
 def train_test_split(X: np.ndarray, y: np.ndarray, test_frac: float = 0.2,
                      seed: int = SEED) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Deterministic shuffle + split. Keeps the evaluation honest (held-out test set)."""

@@ -24,6 +24,7 @@ from models.schemas import (
     RiskFeatures, RiskScoreRequest, RiskScoreResponse, RiskAssessment, ModelMetrics,
 )
 from services import dataset_service as ds
+from services import delay_service
 
 # Feature order is fixed — must match RiskFeatures and the gateway's vector builder.
 FEATURE_NAMES = [
@@ -137,11 +138,14 @@ class _RiskModel:
         sq_err = (recon - xn) ** 2                 # per-feature squared error
         per_sample = sq_err.mean(axis=1)           # reconstruction error
 
+        # RF-3.2: supervised P(SLA breach) for the same batch (delay forecast).
+        delay_probs = delay_service.predict_proba(raw)
+
         out: List[RiskAssessment] = []
         thr = self.threshold if self.threshold > 0 else 1e-3
         for i, f in enumerate(features):
             err = float(per_sample[i])
-            # Risk score in [0,1], scaled by the learned threshold so it keeps gradation:
+            # Anomaly-based risk in [0,1], scaled by the learned threshold so it keeps gradation:
             #  - err ≤ threshold → linearly mapped into the LOW band [0, 0.33),
             #  - err > threshold → soft-saturating curve into [0.33, 1.0] (mild < severe).
             if err <= thr:
@@ -150,23 +154,32 @@ class _RiskModel:
                 risk = 0.33 + 0.67 * (1.0 - float(np.exp(-(err - thr) / thr)))
             risk = float(min(1.0, max(0.0, risk)))
             anomaly = err > thr
-            priority = "HIGH" if risk >= 0.66 else "MEDIUM" if risk >= 0.33 else "LOW"
+            delay_p = float(delay_probs[i]) if len(delay_probs) else 0.0
+
+            # RF-3.4: explainable priority = a transparent blend of the DL signals plus the
+            # business importance. Not a black box — each term is auditable.
+            #   anomaly risk (0.45) + delay forecast (0.40) + business weight (0.15)
+            priority_score = float(min(1.0, 0.45 * risk + 0.40 * delay_p + 0.15 * f.businessWeight))
+            priority = ("HIGH" if priority_score >= 0.60
+                        else "MEDIUM" if priority_score >= 0.33 else "LOW")
 
             # Drivers / recommendation only when the instance is actually at risk.
-            if anomaly:
+            if anomaly or delay_p >= 0.5:
                 order = np.argsort(sq_err[i])[::-1]
                 drivers = [FEATURE_NAMES[j] for j in order[:3] if sq_err[i][j] > 0.10]
                 recommendation = FEATURE_HINTS.get(
                     drivers[0], "Trámite con desviaciones; revisar el avance.") if drivers \
-                    else "Trámite con desviaciones; revisar el avance."
+                    else "Alta probabilidad de demora; priorizar la atención."
             else:
                 drivers = []
                 recommendation = "Trámite dentro de parámetros normales."
             out.append(RiskAssessment(
                 processInstanceId=f.processInstanceId,
                 riskScore=round(risk, 4),
+                delayProbability=round(delay_p, 4),
                 anomaly=bool(anomaly),
                 priority=priority,
+                priorityScore=round(priority_score, 4),
                 reconstructionError=round(err, 6),
                 drivers=drivers,
                 recommendation=recommendation,
